@@ -1,137 +1,176 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
 
-type Page interface {
-	Page(url string) (body string, urls []string, err error)
+type Pager interface {
+	parsePager(ctx context.Context, url string) (body string, urls []string, err error)
 }
 
-type URLs struct {
-	c   map[string]bool
-	mux sync.Mutex
+type page struct {
+	URL string
 }
 
-func (store *URLs) setVisited(url string) bool {
-	store.mux.Lock()
-	_, exists := store.c[url]
-	defer store.mux.Unlock()
+func (p *page) parsePage(ctx context.Context, url string) (string, []string, error) {
+	select {
+	case <-ctx.Done():
+		return "", nil, nil
+	default:
+		cl := &http.Client{}
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return "", nil, err
+		}
+		body, err := cl.Do(req)
+		if err != nil {
+			return "", nil, err
+		}
+		defer body.Body.Close()
 
-	if exists {
-		return true
-	} else {
-		store.c[url] = true
-		return false
-	}
-
-}
-func NewPage(raw io.Reader) (doc *goquery.Document, error error) {
-	doc, err := goquery.NewDocumentFromReader(raw)
-	if err != nil {
-		return nil, err
-	}
-	return doc, nil
-}
-func Get(url string) (b *goquery.Document, error error) {
-	cl := &http.Client{}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	body, err := cl.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer body.Body.Close()
-	b, err = NewPage(body.Body)
-	if err != nil {
-		fmt.Errorf("Error, %s", err)
-	}
-	return b, nil
-}
-
-func Getlinks(url string) []string {
-	var urls []string
-	doc, err := goquery.NewDocument(url)
-	if err != nil {
-		return nil
-	}
-	doc.Find("a").Each(func(_ int, s *goquery.Selection) {
-		url, ok := s.Attr("href")
-		if ok {
-			urls = append(urls, url)
+		doc, err := goquery.NewDocumentFromReader(body.Body)
+		if err != nil {
+			return "", nil, err
 		}
 
-	})
-	return urls
+		title := doc.Find("title").First().Text()
+
+		var urls []string
+
+		doc.Find("a").Each(func(_ int, s *goquery.Selection) {
+			url, ok := s.Attr("href")
+			if ok {
+				urls = append(urls, url)
+			}
+
+		})
+		return title, urls, nil
+	}
+
 }
 
-func Crawl(url string, depth uint64, store URLs, wg *sync.WaitGroup) {
-	defer wg.Done()
+type CrawlResult struct {
+	Err   error
+	Title string
+	Url   string
+}
+
+type Crawler interface {
+	Scan(ctx context.Context, url string, depth uint64)
+	ChanResult() <-chan CrawlResult
+}
+
+type crawler struct {
+	maxDepth uint64
+	res      chan CrawlResult
+	visited  map[string]bool
+	mu       sync.RWMutex
+}
+
+func (c *crawler) Scan(ctx context.Context, url string, depth int64) {
 	if depth <= 0 {
 		return
 	}
-	visited := store.setVisited(url)
-	if visited {
+
+	store := c.visited[url]
+		if store {
 		fmt.Println("Skip, url")
 		return
 	}
+	var page Pager
+	select {
+		case <-ctx.Done(): //Если контекст завершен - прекращаем выполнение
+			return
+		default:
+			body, urls, err := page.parsePager(ctx, url)
+			if err != nil {
+				c.res <- CrawlResult{Err: err}
+				return
+			}
 
-	urls := Getlinks(url)
-//	var increase uint64
-//	increase = 2
-	sigChDepth := make(chan os.Signal)         //Создаем канал для прима сингнала
-	signal.Notify(sigChDepth, syscall.SIGUSR1) // Подписываемся на сигнал SIGUSR1
+		convertUrl := strings.Join(urls, " ")
 
-/*	for {
-		select {
-		case <-sigChDepth:
-			AddMaxDepth(depth, increase)
+		c.res <- CrawlResult{
+			Title: body,
+			Url:   convertUrl,
 		}
-
+		for _, link := range urls {
+			go c.Scan(ctx, link, depth-1)
+		}
 	}
-*/
-	fmt.Printf("found: %q\n", url)
-
-	for _, u := range urls {
-		wg.Add(1)
-		go Crawl(u, depth-1, store, wg)
-	}
-	return
 
 }
-func AddMaxDepth(depth uint64, increase uint64) {
-	atomic.AddUint64(&depth, increase)
+
+func (c *crawler) ChanResult() <-chan CrawlResult {
+	return c.res
+}
+
+type Config struct {
+	MaxDepth   uint64
+	MaxResults int
+	MaxErrors  int
+	Url        string
+	Timeout    int
 }
 
 func main() {
-	store := URLs{c: make(map[string]bool)}
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go Crawl("https://telegram.org/", 3, store, wg)
-	wg.Wait()
-}
-
-type fakeFetcher map[string]*Resuilt
-
-type Resuilt struct {
-	body string
-	urls []string
-}
-
-func (f fakeFetcher) Fetch(url string) (string, []string, error) {
-	if res, ok := f[url]; ok {
-		return res.body, res.urls, nil
+	cfg := Config{
+		MaxDepth:   3,
+		MaxResults: 10,
+		MaxErrors:  500,
+		Url:        "https://telegram.com",
+		Timeout:    10,
 	}
-	return "", nil, fmt.Errorf("not found: %s", url)
+
+	var cr Crawler
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	go cr.Scan(ctx, cfg.Url, cfg.MaxDepth)
+	go processResult(ctx, cancel, cr, cfg)
+	
+	sigCh := make(chan os.Signal)        //Создаем канал для приема сигналов
+	signal.Notify(sigCh, syscall.SIGINT)
+
+	for {
+		select {
+		case <-ctx.Done(): //Если всё завершили - выходим
+			return
+		case <-sigCh:
+			cancel() //Если пришёл сигнал SigInt - завершаем контекст
+		}
+
+	}
+
+}
+
+func processResult(ctx context.Context, cancel func(), cr Crawler, cfg Config) {
+	var maxResult, maxErrors = cfg.MaxResults, cfg.MaxErrors
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-cr.ChanResult():
+			if msg.Err != nil {
+				maxErrors--
+				if maxErrors <= 0 {
+					return
+				}
+			} else {
+				maxResult--
+				if maxResult <= 0 {
+					return
+				}
+			}
+		}
+	}
 }
