@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -77,36 +76,46 @@ type crawler struct {
 	mu       sync.RWMutex
 }
 
-func (c *crawler) Scan(ctx context.Context, url string, depth int64) {
+func (c *crawler) Scan(ctx context.Context, url string, depth uint64) {
 	if depth <= 0 {
 		return
 	}
-
+	c.mu.RLock()
 	store := c.visited[url]
-		if store {
+	c.mu.RUnlock()
+	if store {
 		fmt.Println("Skip, url")
 		return
 	}
-	var page Pager
+	
+	page:= page{
+		URL: url,
+	}
 	select {
-		case <-ctx.Done(): //Если контекст завершен - прекращаем выполнение
+	case <-ctx.Done(): //Если контекст завершен - прекращаем выполнение
+		return
+	default:
+		body, urls, err := page.parsePage(ctx, url)
+		if err != nil {
+			c.res <- CrawlResult{Err: err}
 			return
-		default:
-			body, urls, err := page.parsePager(ctx, url)
-			if err != nil {
-				c.res <- CrawlResult{Err: err}
-				return
-			}
+		}
 
-		convertUrl := strings.Join(urls, " ")
+	for _, u := range urls{
+		if c.visited[u]{
+			fmt.Println("Skip, url")
+			return 
+		}else{
+			go c.Scan(ctx, u, depth-1)
+		}
+	}
 
 		c.res <- CrawlResult{
 			Title: body,
-			Url:   convertUrl,
+			Url:   url,
 		}
-		for _, link := range urls {
-			go c.Scan(ctx, link, depth-1)
-		}
+
+		c.visited[url] = true
 	}
 
 }
@@ -131,13 +140,19 @@ func main() {
 		Url:        "https://telegram.com",
 		Timeout:    10,
 	}
+	var mu sync.RWMutex
 
-	var cr Crawler
+	cr := &crawler{
+		maxDepth: cfg.MaxDepth,
+		res:      make(chan CrawlResult),
+		visited:  make(map[string]bool),
+		mu:       mu,
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	go cr.Scan(ctx, cfg.Url, cfg.MaxDepth)
 	go processResult(ctx, cancel, cr, cfg)
-	
-	sigCh := make(chan os.Signal)        //Создаем канал для приема сигналов
+
+	sigCh := make(chan os.Signal) //Создаем канал для приема сигналов
 	signal.Notify(sigCh, syscall.SIGINT)
 
 	for {
@@ -163,11 +178,15 @@ func processResult(ctx context.Context, cancel func(), cr Crawler, cfg Config) {
 			if msg.Err != nil {
 				maxErrors--
 				if maxErrors <= 0 {
+					fmt.Println("max number of errors received")
 					return
 				}
 			} else {
+				fmt.Println(msg)
 				maxResult--
 				if maxResult <= 0 {
+					fmt.Println("max number of errors received")
+					cancel()
 					return
 				}
 			}
