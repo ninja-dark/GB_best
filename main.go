@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -76,6 +77,11 @@ type crawler struct {
 	mu       sync.RWMutex
 }
 
+
+func (c *crawler) AddMaxDepth(increase uint64) {
+	atomic.AddUint64(&c.maxDepth, increase)
+}
+
 func (c *crawler) Scan(ctx context.Context, url string, depth uint64) {
 	if depth <= 0 {
 		return
@@ -87,8 +93,8 @@ func (c *crawler) Scan(ctx context.Context, url string, depth uint64) {
 		fmt.Println("Skip, url")
 		return
 	}
-	
-	page:= page{
+
+	page := page{
 		URL: url,
 	}
 	select {
@@ -101,14 +107,14 @@ func (c *crawler) Scan(ctx context.Context, url string, depth uint64) {
 			return
 		}
 
-	for _, u := range urls{
-		if c.visited[u]{
-			fmt.Println("Skip, url")
-			return 
-		}else{
-			go c.Scan(ctx, u, depth-1)
+		for _, u := range urls {
+			if c.visited[u] {
+				fmt.Println("Skip, url")
+				return
+			} else {
+				go c.Scan(ctx, u, depth-1)
+			}
 		}
-	}
 
 		c.res <- CrawlResult{
 			Title: body,
@@ -128,6 +134,7 @@ type Config struct {
 	MaxDepth   uint64
 	MaxResults int
 	MaxErrors  int
+	Increase   uint64
 	Url        string
 	Timeout    int
 }
@@ -137,6 +144,7 @@ func main() {
 		MaxDepth:   3,
 		MaxResults: 10,
 		MaxErrors:  500,
+		Increase:   2,
 		Url:        "https://telegram.com",
 		Timeout:    10,
 	}
@@ -155,12 +163,17 @@ func main() {
 	sigCh := make(chan os.Signal) //Создаем канал для приема сигналов
 	signal.Notify(sigCh, syscall.SIGINT)
 
+	sigChDepth := make(chan os.Signal) //Создаем канал для прима сингнала
+	signal.Notify(sigChDepth, syscall.SIGUSR1)
+
 	for {
 		select {
 		case <-ctx.Done(): //Если всё завершили - выходим
 			return
 		case <-sigCh:
 			cancel() //Если пришёл сигнал SigInt - завершаем контекст
+		case <-sigChDepth:
+			cr.AddMaxDepth(cfg.Increase)
 		}
 
 	}
