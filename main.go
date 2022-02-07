@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	log "github.com/sirupsen/logrus"
 )
 
 type Pager interface {
@@ -23,6 +24,12 @@ type page struct {
 }
 
 func (p *page) parsePage(ctx context.Context, url string) (string, []string, error) {
+	log.SetFormatter(&log.JSONFormatter{})
+	standardFields := log.Fields{
+		"host": "srv42",
+	}
+
+	hlog := log.WithFields(standardFields)
 	select {
 	case <-ctx.Done():
 		return "", nil, nil
@@ -30,16 +37,19 @@ func (p *page) parsePage(ctx context.Context, url string) (string, []string, err
 		cl := &http.Client{}
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
+			hlog.WithFields(log.Fields{"uid": 101345}).Error("Error by sending request")
 			return "", nil, err
 		}
 		body, err := cl.Do(req)
 		if err != nil {
+			hlog.WithFields(log.Fields{"uid": 101345}).Error("get new page error")
 			return "", nil, err
 		}
 		defer body.Body.Close()
 
 		doc, err := goquery.NewDocumentFromReader(body.Body)
 		if err != nil {
+
 			return "", nil, err
 		}
 
@@ -50,6 +60,7 @@ func (p *page) parsePage(ctx context.Context, url string) (string, []string, err
 		doc.Find("a").Each(func(_ int, s *goquery.Selection) {
 			url, ok := s.Attr("href")
 			if ok {
+				hlog.WithFields(log.Fields{"uid": 101345}).Info("Find link")
 				urls = append(urls, url)
 			}
 
@@ -77,12 +88,12 @@ type crawler struct {
 	mu       sync.RWMutex
 }
 
-
 func (c *crawler) AddMaxDepth(increase uint64) {
 	atomic.AddUint64(&c.maxDepth, increase)
 }
 
 func (c *crawler) Scan(ctx context.Context, url string, depth uint64) {
+	
 	if depth <= 0 {
 		return
 	}
@@ -140,6 +151,14 @@ type Config struct {
 }
 
 func main() {
+
+	log.SetFormatter(&log.JSONFormatter{})
+	standardFields := log.Fields{
+		"host": "srv42",
+	}
+
+	hlog := log.WithFields(standardFields)
+
 	cfg := Config{
 		MaxDepth:   3,
 		MaxResults: 10,
@@ -156,6 +175,7 @@ func main() {
 		visited:  make(map[string]bool),
 		mu:       mu,
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	go cr.Scan(ctx, cfg.Url, cfg.MaxDepth)
 	go processResult(ctx, cancel, cr, cfg)
@@ -171,9 +191,11 @@ func main() {
 		case <-ctx.Done(): //Если всё завершили - выходим
 			return
 		case <-sigCh:
+			hlog.WithFields(log.Fields{"uid": 100500}).Debug("context closed")
 			cancel() //Если пришёл сигнал SigInt - завершаем контекст
 		case <-sigChDepth:
 			cr.AddMaxDepth(cfg.Increase)
+			hlog.WithFields(log.Fields{"uid": 100500}).Info("Max depth increased")
 		}
 
 	}
