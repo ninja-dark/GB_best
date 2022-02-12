@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	log "github.com/sirupsen/logrus"
 )
 
 type Pager interface {
@@ -22,6 +24,12 @@ type page struct {
 }
 
 func (p *page) parsePage(ctx context.Context, url string) (string, []string, error) {
+	log.SetFormatter(&log.JSONFormatter{})
+	standardFields := log.Fields{
+		"host": "srv42",
+	}
+
+	hlog := log.WithFields(standardFields)
 	select {
 	case <-ctx.Done():
 		return "", nil, nil
@@ -29,16 +37,19 @@ func (p *page) parsePage(ctx context.Context, url string) (string, []string, err
 		cl := &http.Client{}
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
+			hlog.WithFields(log.Fields{"uid": 101345}).Error("Error by sending request")
 			return "", nil, err
 		}
 		body, err := cl.Do(req)
 		if err != nil {
+			hlog.WithFields(log.Fields{"uid": 101345}).Error("get new page error")
 			return "", nil, err
 		}
 		defer body.Body.Close()
 
 		doc, err := goquery.NewDocumentFromReader(body.Body)
 		if err != nil {
+
 			return "", nil, err
 		}
 
@@ -49,6 +60,7 @@ func (p *page) parsePage(ctx context.Context, url string) (string, []string, err
 		doc.Find("a").Each(func(_ int, s *goquery.Selection) {
 			url, ok := s.Attr("href")
 			if ok {
+				hlog.WithFields(log.Fields{"uid": 101345}).Info("Find link")
 				urls = append(urls, url)
 			}
 
@@ -76,7 +88,12 @@ type crawler struct {
 	mu       sync.RWMutex
 }
 
+func (c *crawler) AddMaxDepth(increase uint64) {
+	atomic.AddUint64(&c.maxDepth, increase)
+}
+
 func (c *crawler) Scan(ctx context.Context, url string, depth uint64) {
+	
 	if depth <= 0 {
 		return
 	}
@@ -87,8 +104,8 @@ func (c *crawler) Scan(ctx context.Context, url string, depth uint64) {
 		fmt.Println("Skip, url")
 		return
 	}
-	
-	page:= page{
+
+	page := page{
 		URL: url,
 	}
 	select {
@@ -101,14 +118,14 @@ func (c *crawler) Scan(ctx context.Context, url string, depth uint64) {
 			return
 		}
 
-	for _, u := range urls{
-		if c.visited[u]{
-			fmt.Println("Skip, url")
-			return 
-		}else{
-			go c.Scan(ctx, u, depth-1)
+		for _, u := range urls {
+			if c.visited[u] {
+				fmt.Println("Skip, url")
+				return
+			} else {
+				go c.Scan(ctx, u, depth-1)
+			}
 		}
-	}
 
 		c.res <- CrawlResult{
 			Title: body,
@@ -128,15 +145,25 @@ type Config struct {
 	MaxDepth   uint64
 	MaxResults int
 	MaxErrors  int
+	Increase   uint64
 	Url        string
 	Timeout    int
 }
 
 func main() {
+
+	log.SetFormatter(&log.JSONFormatter{})
+	standardFields := log.Fields{
+		"host": "srv42",
+	}
+
+	hlog := log.WithFields(standardFields)
+
 	cfg := Config{
 		MaxDepth:   3,
 		MaxResults: 10,
 		MaxErrors:  500,
+		Increase:   2,
 		Url:        "https://telegram.com",
 		Timeout:    10,
 	}
@@ -148,6 +175,7 @@ func main() {
 		visited:  make(map[string]bool),
 		mu:       mu,
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	go cr.Scan(ctx, cfg.Url, cfg.MaxDepth)
 	go processResult(ctx, cancel, cr, cfg)
@@ -155,12 +183,19 @@ func main() {
 	sigCh := make(chan os.Signal) //Создаем канал для приема сигналов
 	signal.Notify(sigCh, syscall.SIGINT)
 
+	sigChDepth := make(chan os.Signal) //Создаем канал для прима сингнала
+	signal.Notify(sigChDepth, syscall.SIGUSR1)
+
 	for {
 		select {
 		case <-ctx.Done(): //Если всё завершили - выходим
 			return
 		case <-sigCh:
+			hlog.WithFields(log.Fields{"uid": 100500}).Debug("context closed")
 			cancel() //Если пришёл сигнал SigInt - завершаем контекст
+		case <-sigChDepth:
+			cr.AddMaxDepth(cfg.Increase)
+			hlog.WithFields(log.Fields{"uid": 100500}).Info("Max depth increased")
 		}
 
 	}
