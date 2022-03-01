@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 	log "github.com/sirupsen/logrus"
-	"best_go/cmd/model"
-	"best_go/cmd/page"
+	"best_go/internal/model"
+	"best_go/internal/page"
 )
 
 type requester struct{

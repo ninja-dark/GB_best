@@ -1,9 +1,9 @@
 package main
 
 import (
-	"best_go/cmd/crawler"
-	"best_go/cmd/model"
-	"best_go/cmd/request"
+	"best_go/internal/crawler"
+	"best_go/internal/model"
+	"best_go/internal/request"
 	"context"
 	"fmt"
 	"os"

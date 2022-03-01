@@ -6,7 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"best_go/cmd/model"
+	"best_go/internal/model"
 
 )
 

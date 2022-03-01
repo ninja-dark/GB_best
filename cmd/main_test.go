@@ -1,8 +1,8 @@
 package main
 
 import (
-	"best_go/cmd/crawler"
-	"best_go/cmd/model"
+	"best_go/internal/crawler"
+	"best_go/internal/model"
 	"context"
 	"fmt"
 	"sync"

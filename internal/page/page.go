@@ -1,7 +1,7 @@
 package page
 
 import (
-	"best_go/cmd/model"
+	"best_go/internal/model"
 	"io"
 
 	"github.com/PuerkitoBio/goquery"
